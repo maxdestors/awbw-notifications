@@ -1,0 +1,371 @@
+use anyhow::{anyhow, Context, Result};
+use axum::{response::IntoResponse, routing::post, Json, Router};
+use base64::Engine;
+use cookie_store::CookieStore;
+use reqwest::{header, Client};
+use reqwest_cookie_store::CookieStoreMutex;
+use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
+const AWBW_URL: &str = "https://awbw.amarriner.com/yourgames.php?yourTurn=1";
+const LOGIN_URL: &str = "https://awbw.amarriner.com/login.php";
+const BASE_URL: &str = "https://awbw.amarriner.com/";
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct State {
+    sig: String,
+    count: Option<u32>,
+    cookies_json: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RunResponse {
+    ok: bool,
+    changed: bool,
+    count: u32,
+    logged_in: bool,
+    posted: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let app = Router::new().route("/run", post(run_handler));
+
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    Ok(())
+}
+
+async fn run_handler() -> axum::response::Response {
+    match run().await {
+        Ok(resp) => (axum::http::StatusCode::OK, Json(resp)).into_response(),
+        Err(e) => {
+            eprintln!("[ERROR] {:#}", e);
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn run() -> Result<RunResponse> {
+    let project_id = std::env::var("PROJECT_ID").context("PROJECT_ID env missing")?;
+    let bucket = std::env::var("BUCKET_NAME").context("BUCKET_NAME env missing")?;
+    let state_object = std::env::var("STATE_OBJECT").unwrap_or_else(|_| "state.json".to_string());
+
+    let mut state = gcs_read_state(&bucket, &state_object).await.unwrap_or_default();
+
+    let jar = if let Some(cj) = &state.cookies_json {
+        CookieStore::load_json(std::io::Cursor::new(cj.as_bytes()))
+            .unwrap_or_else(|_| CookieStore::default())
+    } else {
+        CookieStore::default()
+    };
+    let jar = Arc::new(CookieStoreMutex::new(jar));
+
+    let client = Client::builder()
+        .cookie_provider(jar.clone())
+        .user_agent("awbw-turn-checker/1.0")
+        .build()?;
+
+    let mut html = fetch_awbw_page(&client).await?;
+    let mut logged_in = !html.contains("You must be logged in");
+
+    if !logged_in {
+        let username = sm_access_secret(&project_id, "AWBW_USERNAME").await?;
+        let password = sm_access_secret(&project_id, "AWBW_PASSWORD").await?;
+        login_awbw(&client, &username, &password).await?;
+
+        html = fetch_awbw_page(&client).await?;
+        logged_in = !html.contains("You must be logged in");
+        if !logged_in {
+            return Err(anyhow!("Login failed: still not logged in after POST"));
+        }
+    }
+
+    let (count, ids) = extract_turn_info(&html);
+    let sig = make_signature(count, &ids);
+
+    let changed = !state.sig.is_empty() && state.sig != sig;
+
+    state.sig = sig.clone();
+    state.count = Some(count);
+    state.cookies_json = Some(save_cookie_store_json(jar.clone())?);
+
+    gcs_write_state(&bucket, &state_object, &state).await?;
+
+    let mut posted = false;
+    if changed {
+        let webhook = sm_access_secret(&project_id, "DISCORD_WEBHOOK_URL").await?;
+        let msg = build_discord_message(count, &ids);
+        post_discord(&client, &webhook, &msg).await?;
+        posted = true;
+    }
+
+    Ok(RunResponse {
+        ok: true,
+        changed,
+        count,
+        logged_in,
+        posted,
+    })
+}
+
+async fn fetch_awbw_page(client: &Client) -> Result<String> {
+    let resp = client.get(AWBW_URL).send().await?;
+    let body = resp.text().await?;
+    Ok(body)
+}
+
+fn extract_turn_info(html: &str) -> (u32, Vec<u32>) {
+    let count = regex_capture_u32(html, r"Your Turn Games\s*\((\d+)\)").unwrap_or(0);
+
+    let mut ids = Vec::new();
+    let re = regex::Regex::new(r#"href\s*=\s*["']?game\.php\?games_id=(\d+)"#).unwrap();
+    for cap in re.captures_iter(html) {
+        if let Ok(id) = cap[1].parse::<u32>() {
+            ids.push(id);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+
+    (count, ids)
+}
+
+fn make_signature(count: u32, ids: &[u32]) -> String {
+    use sha2::{Digest, Sha256};
+    let source = if !ids.is_empty() {
+        ids.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        format!("count:{count}")
+    };
+    let mut h = Sha256::new();
+    h.update(source.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+fn build_discord_message(count: u32, ids: &[u32]) -> String {
+    if count == 0 {
+        return format!("✅ **AWBW**: No games pending.\n{AWBW_URL}");
+    }
+    let mut s =
+        format!("🎮 **AWBW**: It's your turn! Pending games: **{count}**\n");
+    for id in ids.iter().take(5) {
+        s.push_str(&format!("{BASE_URL}game.php?games_id={id}\n"));
+    }
+    if ids.len() > 5 {
+        s.push_str(&format!("…(+{} more)\n", ids.len() - 5));
+    }
+    s.push_str(AWBW_URL);
+    s
+}
+
+async fn post_discord(client: &Client, webhook: &str, content: &str) -> Result<()> {
+    let payload = serde_json::json!({ "content": content });
+    let resp = client
+        .post(webhook)
+        .header(header::CONTENT_TYPE, "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "Discord webhook failed: {} {}",
+            status,
+            txt
+        ));
+    }
+    Ok(())
+}
+
+async fn login_awbw(client: &Client, username: &str, password: &str) -> Result<()> {
+    let login_page = client.get(LOGIN_URL).send().await?.text().await?;
+
+    let form = {
+        let mut form = HashMap::<String, String>::new();
+        let doc = Html::parse_document(&login_page);
+        let input_sel = Selector::parse("form input").unwrap();
+
+        for input in doc.select(&input_sel) {
+            let v = input.value();
+            let name = match v.attr("name") {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let value = v.attr("value").unwrap_or("").to_string();
+            if v
+                .attr("type")
+                .unwrap_or("")
+                .eq_ignore_ascii_case("hidden")
+            {
+                form.insert(name, value);
+            }
+        }
+
+        form.insert("username".into(), username.into());
+        form.insert("password".into(), password.into());
+        form
+    };
+
+    let resp = client.post(LOGIN_URL).form(&form).send().await?;
+
+    let body = resp.text().await.unwrap_or_default();
+
+    if body.contains("Login")
+        && body.contains("Username")
+        && body.contains("Password")
+        && body.contains("Forgot Password")
+    {
+        eprintln!("[WARN] Login response looks like login page again");
+    }
+    Ok(())
+}
+
+fn save_cookie_store_json(jar: Arc<CookieStoreMutex>) -> Result<String> {
+    let jar = jar.lock().unwrap();
+    let mut buf = Vec::new();
+    jar.save_json(&mut buf)
+        .map_err(|err| anyhow!("cookie store serialize failed: {err}"))?;
+    Ok(String::from_utf8(buf)?)
+}
+
+#[derive(Deserialize)]
+struct MetadataToken {
+    access_token: String,
+}
+
+async fn adc_access_token() -> Result<String> {
+    let url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+    let resp = reqwest::Client::new()
+        .get(url)
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("metadata token error: {}", resp.status()));
+    }
+    let t: MetadataToken = resp.json().await?;
+    Ok(t.access_token)
+}
+
+async fn sm_access_secret(project_id: &str, secret_name: &str) -> Result<String> {
+    let token = adc_access_token().await?;
+    let url = format!(
+        "https://secretmanager.googleapis.com/v1/projects/{}/secrets/{}/versions/latest:access",
+        project_id, secret_name
+    );
+    let resp = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(anyhow!(
+            "secret access failed {} for {}",
+            resp.status(),
+            secret_name
+        ));
+    }
+    let v: serde_json::Value = resp.json().await?;
+    let data_b64 = v["payload"]["data"]
+        .as_str()
+        .ok_or_else(|| anyhow!("secret payload missing"))?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data_b64)?;
+    Ok(String::from_utf8(bytes)?.trim().to_string())
+}
+
+async fn gcs_read_state(bucket: &str, object: &str) -> Result<State> {
+    let token = adc_access_token().await?;
+    let obj = urlencoding::encode(object);
+    let url = format!(
+        "https://storage.googleapis.com/storage/v1/b/{}/o/{}?alt=media",
+        bucket, obj
+    );
+
+    let resp = reqwest::Client::new().get(url).bearer_auth(token).send().await?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(State::default());
+    }
+    if !resp.status().is_success() {
+        return Err(anyhow!("gcs read failed: {}", resp.status()));
+    }
+    let text = resp.text().await?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+async fn gcs_write_state(bucket: &str, object: &str, state: &State) -> Result<()> {
+    let token = adc_access_token().await?;
+    let obj = urlencoding::encode(object);
+    let url = format!(
+        "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}",
+        bucket, obj
+    );
+
+    let body = serde_json::to_string(state)?;
+    let resp = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(token)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("gcs write failed: {} {}", status, txt));
+    }
+    Ok(())
+}
+
+fn regex_capture_u32(text: &str, pat: &str) -> Option<u32> {
+    let re = regex::Regex::new(pat).ok()?;
+    let cap = re.captures(text)?;
+    cap.get(1)?.as_str().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_turn_info_finds_count_and_ids() {
+        let html = r#"
+            <h1>Your Turn Games (2)</h1>
+            <a href="game.php?games_id=123">Game</a>
+            <a href="game.php?games_id=456">Game</a>
+            <a href="game.php?games_id=123">Duplicate</a>
+        "#;
+
+        let (count, ids) = extract_turn_info(html);
+
+        assert_eq!(count, 2);
+        assert_eq!(ids, vec![123, 456]);
+    }
+
+    #[test]
+    fn build_discord_message_handles_no_games() {
+        let msg = build_discord_message(0, &[]);
+
+        assert!(msg.contains("No games pending"));
+        assert!(msg.contains(AWBW_URL));
+    }
+
+    #[test]
+    fn make_signature_changes_with_ids() {
+        let sig_one = make_signature(1, &[10, 20]);
+        let sig_two = make_signature(1, &[10, 30]);
+
+        assert_ne!(sig_one, sig_two);
+    }
+}
