@@ -1,0 +1,90 @@
+steps:
+  # --------------------------------------------------
+  # 1) Build Docker image
+  # --------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_IMAGE_URI}', '.']
+
+  # --------------------------------------------------
+  # 2) Push image to Artifact Registry
+  # --------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_IMAGE_URI}']
+
+  # --------------------------------------------------
+  # 3) Deploy Cloud Run
+  # --------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+
+        echo "== Deploy Cloud Run =="
+        gcloud run deploy ${_SERVICE_NAME} \
+          --image ${_IMAGE_URI} \
+          --region ${_REGION} \
+          --service-account ${_RUN_SA_EMAIL} \
+          --set-env-vars PROJECT_ID=${PROJECT_ID},BUCKET_NAME=${_BUCKET_NAME},STATE_OBJECT=${_STATE_OBJECT} \
+          --no-allow-unauthenticated
+
+        RUN_URL=$(gcloud run services describe ${_SERVICE_NAME} \
+          --region ${_REGION} \
+          --format='value(status.url)')
+
+        echo "Cloud Run URL: $RUN_URL"
+
+        # --------------------------------------------------
+        # 5) Create or update Cloud Scheduler job
+        # --------------------------------------------------
+        JOB_URI="$RUN_URL${_SCHEDULER_PATH}"
+
+        echo "== Configure Cloud Scheduler =="
+        if gcloud scheduler jobs describe ${_SCHEDULER_JOB} --location ${_REGION} >/dev/null 2>&1; then
+          echo "Updating existing scheduler job..."
+          gcloud scheduler jobs update http ${_SCHEDULER_JOB} \
+            --location ${_REGION} \
+            --schedule "${_SCHEDULER_CRON}" \
+            --time-zone "${_SCHEDULER_TZ}" \
+            --http-method POST \
+            --uri "$JOB_URI" \
+            --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
+            --oidc-token-audience "$RUN_URL"
+        else
+          echo "Creating scheduler job..."
+          gcloud scheduler jobs create http ${_SCHEDULER_JOB} \
+            --location ${_REGION} \
+            --schedule "${_SCHEDULER_CRON}" \
+            --time-zone "${_SCHEDULER_TZ}" \
+            --http-method POST \
+            --uri "$JOB_URI" \
+            --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
+            --oidc-token-audience "$RUN_URL"
+        fi
+
+        echo "== Done =="
+
+# --------------------------------------------------
+# Variables to customize
+# --------------------------------------------------
+substitutions:
+  _REGION: 'europe-west1'
+
+  _SERVICE_NAME: 'awbw-notifier'
+  _BUCKET_NAME: 'YOUR_PROJECT_ID-awbw-state'
+  _STATE_OBJECT: 'state.json'
+
+  _RUN_SA_EMAIL: 'awbw-notifier-run-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com'
+  _SCHED_SA_EMAIL: 'awbw-notifier-scheduler-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com'
+
+  _IMAGE_URI: 'europe-west1-docker.pkg.dev/YOUR_PROJECT_ID/awbw/awbw-notifier:latest'
+
+  # Scheduler config (NO NIGHT by default, Paris time)
+  _SCHEDULER_JOB: 'awbw-notifier-job'
+  _SCHEDULER_CRON: '1-59/6 7-22 * * *'
+  _SCHEDULER_TZ: 'Europe/Paris'
+  _SCHEDULER_PATH: '/run'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

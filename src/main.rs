@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use axum::{response::IntoResponse, routing::post, Json, Router};
-use base64::Engine;
 use cookie_store::CookieStore;
 use reqwest::{header, Client};
 use reqwest_cookie_store::CookieStoreMutex;
@@ -30,6 +29,8 @@ struct RunResponse {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+
     let app = Router::new().route("/run", post(run_handler));
 
     let port: u16 = std::env::var("PORT")
@@ -53,11 +54,13 @@ async fn run_handler() -> axum::response::Response {
 }
 
 async fn run() -> Result<RunResponse> {
-    let project_id = std::env::var("PROJECT_ID").context("PROJECT_ID env missing")?;
+    let _project_id = std::env::var("PROJECT_ID").context("PROJECT_ID env missing")?;
     let bucket = std::env::var("BUCKET_NAME").context("BUCKET_NAME env missing")?;
     let state_object = std::env::var("STATE_OBJECT").unwrap_or_else(|_| "state.json".to_string());
 
-    let mut state = gcs_read_state(&bucket, &state_object).await.unwrap_or_default();
+    let mut state = gcs_read_state(&bucket, &state_object)
+        .await
+        .unwrap_or_default();
 
     let jar = if let Some(cj) = &state.cookies_json {
         CookieStore::load_json(std::io::Cursor::new(cj.as_bytes()))
@@ -76,8 +79,8 @@ async fn run() -> Result<RunResponse> {
     let mut logged_in = !html.contains("You must be logged in");
 
     if !logged_in {
-        let username = sm_access_secret(&project_id, "AWBW_USERNAME").await?;
-        let password = sm_access_secret(&project_id, "AWBW_PASSWORD").await?;
+        let username = std::env::var("AWBW_USERNAME").context("AWBW_USERNAME env missing")?;
+        let password = std::env::var("AWBW_PASSWORD").context("AWBW_PASSWORD env missing")?;
         login_awbw(&client, &username, &password).await?;
 
         html = fetch_awbw_page(&client).await?;
@@ -100,7 +103,8 @@ async fn run() -> Result<RunResponse> {
 
     let mut posted = false;
     if changed {
-        let webhook = sm_access_secret(&project_id, "DISCORD_WEBHOOK_URL").await?;
+        let webhook =
+            std::env::var("DISCORD_WEBHOOK_URL").context("DISCORD_WEBHOOK_URL env missing")?;
         let msg = build_discord_message(count, &ids);
         post_discord(&client, &webhook, &msg).await?;
         posted = true;
@@ -156,8 +160,7 @@ fn build_discord_message(count: u32, ids: &[u32]) -> String {
     if count == 0 {
         return format!("✅ **AWBW**: No games pending.\n{AWBW_URL}");
     }
-    let mut s =
-        format!("🎮 **AWBW**: It's your turn! Pending games: **{count}**\n");
+    let mut s = format!("🎮 **AWBW**: It's your turn! Pending games: **{count}**\n");
     for id in ids.iter().take(5) {
         s.push_str(&format!("{BASE_URL}game.php?games_id={id}\n"));
     }
@@ -180,11 +183,7 @@ async fn post_discord(client: &Client, webhook: &str, content: &str) -> Result<(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Discord webhook failed: {} {}",
-            status,
-            txt
-        ));
+        return Err(anyhow!("Discord webhook failed: {} {}", status, txt));
     }
     Ok(())
 }
@@ -204,11 +203,7 @@ async fn login_awbw(client: &Client, username: &str, password: &str) -> Result<(
                 None => continue,
             };
             let value = v.attr("value").unwrap_or("").to_string();
-            if v
-                .attr("type")
-                .unwrap_or("")
-                .eq_ignore_ascii_case("hidden")
-            {
+            if v.attr("type").unwrap_or("").eq_ignore_ascii_case("hidden") {
                 form.insert(name, value);
             }
         }
@@ -240,60 +235,19 @@ fn save_cookie_store_json(jar: Arc<CookieStoreMutex>) -> Result<String> {
     Ok(String::from_utf8(buf)?)
 }
 
-#[derive(Deserialize)]
-struct MetadataToken {
-    access_token: String,
-}
-
-async fn adc_access_token() -> Result<String> {
-    let url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
-    let resp = reqwest::Client::new()
-        .get(url)
-        .header("Metadata-Flavor", "Google")
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("metadata token error: {}", resp.status()));
-    }
-    let t: MetadataToken = resp.json().await?;
-    Ok(t.access_token)
-}
-
-async fn sm_access_secret(project_id: &str, secret_name: &str) -> Result<String> {
-    let token = adc_access_token().await?;
-    let url = format!(
-        "https://secretmanager.googleapis.com/v1/projects/{}/secrets/{}/versions/latest:access",
-        project_id, secret_name
-    );
-    let resp = reqwest::Client::new()
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(anyhow!(
-            "secret access failed {} for {}",
-            resp.status(),
-            secret_name
-        ));
-    }
-    let v: serde_json::Value = resp.json().await?;
-    let data_b64 = v["payload"]["data"]
-        .as_str()
-        .ok_or_else(|| anyhow!("secret payload missing"))?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(data_b64)?;
-    Ok(String::from_utf8(bytes)?.trim().to_string())
-}
-
 async fn gcs_read_state(bucket: &str, object: &str) -> Result<State> {
-    let token = adc_access_token().await?;
+    let token = access_token_for_gcs().await?;
     let obj = urlencoding::encode(object);
     let url = format!(
         "https://storage.googleapis.com/storage/v1/b/{}/o/{}?alt=media",
         bucket, obj
     );
 
-    let resp = reqwest::Client::new().get(url).bearer_auth(token).send().await?;
+    let resp = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(State::default());
     }
@@ -305,7 +259,7 @@ async fn gcs_read_state(bucket: &str, object: &str) -> Result<State> {
 }
 
 async fn gcs_write_state(bucket: &str, object: &str, state: &State) -> Result<()> {
-    let token = adc_access_token().await?;
+    let token = access_token_for_gcs().await?;
     let obj = urlencoding::encode(object);
     let url = format!(
         "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}",
@@ -326,6 +280,13 @@ async fn gcs_write_state(bucket: &str, object: &str, state: &State) -> Result<()
         return Err(anyhow!("gcs write failed: {} {}", status, txt));
     }
     Ok(())
+}
+
+async fn access_token_for_gcs() -> Result<String> {
+    let scopes = &["https://www.googleapis.com/auth/devstorage.read_write"];
+    let provider = gcp_auth::provider().await?;
+    let token = provider.token(scopes).await?;
+    Ok(token.as_str().to_string())
 }
 
 fn regex_capture_u32(text: &str, pat: &str) -> Option<u32> {

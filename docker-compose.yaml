@@ -1,0 +1,14 @@
+services:
+  awbw-notifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: awbw-notifier:local
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PROJECT_ID: ${PROJECT_ID:?set PROJECT_ID}
+      BUCKET_NAME: ${BUCKET_NAME:?set BUCKET_NAME}
+      STATE_OBJECT: ${STATE_OBJECT:-state.json}
+      PORT: ${PORT:-8080}
+    restart: unless-stopped
