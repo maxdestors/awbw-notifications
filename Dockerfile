@@ -4,7 +4,7 @@ COPY Cargo.toml ./
 COPY src ./src
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim as production
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/awbw_notifier /usr/local/bin/awbw_notifier
 ENV PORT=8080

@@ -54,7 +54,7 @@ async fn run_handler() -> axum::response::Response {
 }
 
 async fn run() -> Result<RunResponse> {
-    let _project_id = std::env::var("PROJECT_ID").context("PROJECT_ID env missing")?;
+    let _project_id = std::env::var("GOOGLE_CLOUD_PROJECT").context("GOOGLE_CLOUD_PROJECT env missing")?;
     let bucket = std::env::var("BUCKET_NAME").context("BUCKET_NAME env missing")?;
     let state_object = std::env::var("STATE_OBJECT").unwrap_or_else(|_| "state.json".to_string());
 
