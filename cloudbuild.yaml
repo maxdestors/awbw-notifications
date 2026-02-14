@@ -1,4 +1,14 @@
 steps:
+
+  - id: Build & Push image
+    name: gcr.io/kaniko-project/executor:latest
+    args:
+      - --dockerfile=/workspace/Dockerfile
+      - --destination=${_BACKEND_IMAGE_REPO}:HAPY-${_APP_VERSION}
+      - --cache=true
+      - --build-arg=user=soliha
+      - --build-arg=uid=1000
+      - --target=production
   # --------------------------------------------------
   # 1) Build Docker image
   # --------------------------------------------------
