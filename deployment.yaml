@@ -9,6 +9,7 @@ steps:
       "--image", "${_REGION}-docker.pkg.dev/$PROJECT_ID/awbw-notifier:${_APP_VERSION}",
       "--region", "${_REGION}",
       "--update-env-vars", "APP_VERSION=$_APP_VERSION",
+      "--set-env-vars", "BUCKET_NAME=${_BUCKET_NAME},STATE_OBJECT=${_STATE_OBJECT} \
     ]
 
   # Deploy update or create Scheduler
@@ -26,9 +27,6 @@ steps:
 
         echo "Cloud Run URL: $RUN_URL"
 
-        # --------------------------------------------------
-        # 5) Create or update Cloud Scheduler job
-        # --------------------------------------------------
         JOB_URI="$RUN_URL${_SCHEDULER_URI}"
 
         echo "== Configure Cloud Scheduler =="
@@ -64,13 +62,12 @@ substitutions:
   _APP_VERSION: $COMMIT_SHA
 
   _SERVICE_NAME: 'awbw-notifier'
-  _BUCKET_NAME: 'awbw-notifier-state'
+  _BUCKET_NAME: 'awbw-notifier-prod'
   _STATE_OBJECT: 'state.json'
 
   _RUN_SA_EMAIL: 'awbw-notifier-run-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com'
   _SCHED_SA_EMAIL: 'awbw-notifier-scheduler-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com'
 
-  _IMAGE_URI: 'europe-west1-docker.pkg.dev/YOUR_PROJECT_ID/awbw/awbw-notifier:latest'
 
   # Scheduler config (NO NIGHT by default, Paris time)
   _SCHEDULER_JOB: 'awbw-notifier-job'
