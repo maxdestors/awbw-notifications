@@ -4,7 +4,7 @@ steps:
     name: gcr.io/kaniko-project/executor:latest
     args:
       - --dockerfile=/workspace/Dockerfile
-      - --destination=${_REGION}-docker.pkg.dev/$PROJECT_ID/awbw-notifier:${_APP_VERSION}
+      - --destination=${_REGION}-docker.pkg.dev/$PROJECT_ID/awbw-notifier/awbw-notifier:${_APP_VERSION}
       - --cache=true
       - --target=production
 
