@@ -25,13 +25,13 @@ steps:
       - |
         set -e
 
-        RUN_URL=$(gcloud run services describe ${_SERVICE_NAME} \
+        run_url=$(gcloud run services describe ${_SERVICE_NAME} \
           --region ${_REGION} \
           --format='value(status.url)')
 
-        echo "Cloud Run URL: $RUN_URL"
+        echo "Cloud Run URL: $run_url"
 
-        JOB_URI="$RUN_URL${_SCHEDULER_URI}"
+        job_uri="$run_url${_SCHEDULER_URI}"
 
         echo "== Configure Cloud Scheduler =="
         if gcloud scheduler jobs describe ${_SCHEDULER_JOB} --location ${_REGION} >/dev/null 2>&1; then
@@ -41,7 +41,7 @@ steps:
             --schedule "${_SCHEDULER_CRON}" \
             --time-zone "${_SCHEDULER_TZ}" \
             --http-method POST \
-            --uri "$JOB_URI"
+            --uri "$job_uri"
             # --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
             # --oidc-token-audience "$RUN_URL"
         else
@@ -51,7 +51,7 @@ steps:
             --schedule "${_SCHEDULER_CRON}" \
             --time-zone "${_SCHEDULER_TZ}" \
             --http-method POST \
-            --uri "$JOB_URI"
+            --uri "$job_uri"
             # --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
             # --oidc-token-audience "$RUN_URL"
         fi
