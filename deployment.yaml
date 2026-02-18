@@ -43,7 +43,7 @@ steps:
             --http-method POST \
             --uri "$job_uri"
             # --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
-            # --oidc-token-audience "$RUN_URL"
+            # --oidc-token-audience "$run_url"
         else
           echo "Creating scheduler job..."
           gcloud scheduler jobs create http ${_SCHEDULER_JOB} \
@@ -53,7 +53,7 @@ steps:
             --http-method POST \
             --uri "$job_uri"
             # --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
-            # --oidc-token-audience "$RUN_URL"
+            # --oidc-token-audience "$run_url"
         fi
 
         echo "== Done =="
