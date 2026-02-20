@@ -41,7 +41,7 @@ steps:
             --schedule "${_SCHEDULER_CRON}" \
             --time-zone "${_SCHEDULER_TZ}" \
             --http-method POST \
-            --uri "$job_uri"
+            --uri "$job_uri" \
             --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
             --oidc-token-audience "$run_url"
         else
@@ -51,7 +51,7 @@ steps:
             --schedule "${_SCHEDULER_CRON}" \
             --time-zone "${_SCHEDULER_TZ}" \
             --http-method POST \
-            --uri "$job_uri"
+            --uri "$job_uri" \
             --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
             --oidc-token-audience "$run_url"
         fi
