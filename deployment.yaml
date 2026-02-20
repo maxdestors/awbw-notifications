@@ -68,6 +68,8 @@ substitutions:
   # Artifact Registry repository name (THIS is the missing segment)
   _AR_REPO: awbw-notifier   # <-- change to your actual AR repo name
 
+  _RUN_SA_EMAIL: awbw-notifier-run-sa@games-n-co-486920.iam.gserviceaccount.com
+
   _BUCKET_NAME: awbw-notifier-prod
   _STATE_OBJECT: state.json
 
