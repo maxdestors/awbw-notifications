@@ -42,8 +42,8 @@ steps:
             --time-zone "${_SCHEDULER_TZ}" \
             --http-method POST \
             --uri "$job_uri"
-            # --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
-            # --oidc-token-audience "$run_url"
+            --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
+            --oidc-token-audience "$run_url"
         else
           echo "Creating scheduler job..."
           gcloud scheduler jobs create http ${_SCHEDULER_JOB} \
@@ -52,8 +52,8 @@ steps:
             --time-zone "${_SCHEDULER_TZ}" \
             --http-method POST \
             --uri "$job_uri"
-            # --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
-            # --oidc-token-audience "$run_url"
+            --oidc-service-account-email "${_SCHED_SA_EMAIL}" \
+            --oidc-token-audience "$run_url"
         fi
 
         echo "== Done =="
@@ -69,7 +69,8 @@ substitutions:
   _AR_REPO: awbw-notifier   # <-- change to your actual AR repo name
 
   _RUN_SA_EMAIL: awbw-notifier-run-sa@games-n-co-486920.iam.gserviceaccount.com
-
+  _SCHED_SA_EMAIL: awbw-notifier-scheduler-sa@games-n-co-486920.iam.gserviceaccount.com
+  
   _BUCKET_NAME: awbw-notifier-prod
   _STATE_OBJECT: state.json
 
