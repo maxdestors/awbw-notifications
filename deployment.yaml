@@ -71,9 +71,6 @@ substitutions:
   _BUCKET_NAME: awbw-notifier-prod
   _STATE_OBJECT: state.json
 
-  _RUN_SA_EMAIL: awbw-notifier-run-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
-  _SCHED_SA_EMAIL: awbw-notifier-scheduler-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
-
   _SCHEDULER_JOB: awbw-notifier-job
   _SCHEDULER_CRON: '1-59/9 7-22 * * *'
   _SCHEDULER_TZ: Europe/Paris
@@ -81,6 +78,3 @@ substitutions:
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
-# OPTIONAL: only include this if you're explicitly setting build.service_account somewhere
-# serviceAccount: projects/$PROJECT_ID/serviceAccounts/<YOUR_BUILD_SA>@$PROJECT_ID.iam.gserviceaccount.com
