@@ -12,7 +12,7 @@ steps:
       - --region
       - ${_REGION}
       - --set-env-vars
-      - APP_VERSION=${_APP_VERSION},BUCKET_NAME=${_BUCKET_NAME},STATE_OBJECT=${_STATE_OBJECT}
+      - APP_VERSION=${_APP_VERSION},BUCKET_NAME=${_BUCKET_NAME},STATE_OBJECT=${_STATE_OBJECT},GOOGLE_CLOUD_PROJECT=$PROJECT_ID
       - --service-account
       - ${_RUN_SA_EMAIL}
 
@@ -62,11 +62,11 @@ substitutions:
   _REGION: europe-west1
   _APP_VERSION: $COMMIT_SHA
 
-  # Cloud Run service name AND image name (kept same here)
+  # Cloud Run service name AND image name
   _SERVICE_NAME: awbw-notifier
 
-  # Artifact Registry repository name (THIS is the missing segment)
-  _AR_REPO: awbw-notifier   # <-- change to your actual AR repo name
+  # Artifact Registry repository name
+  _AR_REPO: awbw-notifier
 
   _RUN_SA_EMAIL: awbw-notifier-run-sa@games-n-co-486920.iam.gserviceaccount.com
   _SCHED_SA_EMAIL: awbw-notifier-scheduler-sa@games-n-co-486920.iam.gserviceaccount.com
