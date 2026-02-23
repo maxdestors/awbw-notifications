@@ -115,7 +115,6 @@ async fn run() -> Result<RunResponse> {
         posted = true;
     }
 
-
     Ok(RunResponse {
         ok: true,
         changed,
@@ -176,9 +175,12 @@ fn build_discord_message(count: u32, ids: &[u32]) -> String {
         .collect::<Vec<_>>()
         .join(" • ");
 
-    let mut s = format!("🎮 **AWBW ({count})** → [All]({AWBW_URL}) • {links}");
+    let mut s = format!("🎮 **AWBW ({count})** → [All]({AWBW_URL})");
+    if !links.is_empty() {
+        s.push_str(&format!(" • {links}"));
+    }
     if ids.len() > 5 {
-        s.push_str(&format!(" • +{} more\n", ids.len() - 5));
+        s.push_str(&format!(" • +{} more", ids.len() - 5));
     }
     s
 }
@@ -330,6 +332,26 @@ mod tests {
     }
 
     #[test]
+    fn extract_turn_info_finds_start_count_and_ids() {
+        let html = r#"
+        <body>
+            <h1>Your Games Waiting to Start (1)</h1>
+            <table>Game 1</table>
+
+            <h1>Your Turn Games (2)</h1>
+            <a href="game.php?games_id=111">Game</a>
+            <a href="game.php?games_id=222">Game</a>
+            <a href="game.php?games_id=111">Duplicate</a>
+        </body>
+        "#;
+
+        let (count, ids) = extract_turn_info(html);
+
+        assert_eq!(count, 3);
+        assert_eq!(ids, vec![111, 222]);
+    }
+
+    #[test]
     fn build_discord_message_handles_no_games() {
         let msg = build_discord_message(0, &[]);
 
@@ -337,9 +359,47 @@ mod tests {
     }
 
     #[test]
+    fn build_discord_message_handles_one_start_game_no_ids() {
+        let msg = build_discord_message(1, &[]);
+
+        assert_eq!(
+            msg,
+            "🎮 **AWBW (1)** → [All](https://awbw.amarriner.com/yourgames.php?yourTurn=1)"
+        );
+    }
+
+    #[test]
+    fn build_discord_message_handles_two_games() {
+        let msg = build_discord_message(2, &[111, 222]);
+
+        assert_eq!(
+            msg,
+            "🎮 **AWBW (2)** → [All](https://awbw.amarriner.com/yourgames.php?yourTurn=1) • [111](https://awbw.amarriner.com/game.php?games_id=111) • [222](https://awbw.amarriner.com/game.php?games_id=222)"
+        );
+    }
+
+    #[test]
+    fn build_discord_message_handles_6_games() {
+        let msg = build_discord_message(6, &[6, 5, 4, 3, 2, 1]);
+
+        assert_eq!(
+            msg,
+            "🎮 **AWBW (6)** → [All](https://awbw.amarriner.com/yourgames.php?yourTurn=1) • [6](https://awbw.amarriner.com/game.php?games_id=6) • [5](https://awbw.amarriner.com/game.php?games_id=5) • [4](https://awbw.amarriner.com/game.php?games_id=4) • [3](https://awbw.amarriner.com/game.php?games_id=3) • [2](https://awbw.amarriner.com/game.php?games_id=2) • +1 more"
+        );
+    }
+
+    #[test]
     fn make_signature_changes_with_ids() {
         let sig_one = make_signature(1, &[10, 20]);
         let sig_two = make_signature(1, &[10, 30]);
+
+        assert_ne!(sig_one, sig_two);
+    }
+
+    #[test]
+    fn make_signature_equals_with_ids() {
+        let sig_one = make_signature(1, &[10, 20, 30]);
+        let sig_two = make_signature(1, &[10, 30, 20]);
 
         assert_ne!(sig_one, sig_two);
     }
