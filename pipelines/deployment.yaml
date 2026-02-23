@@ -8,11 +8,11 @@ steps:
       - deploy
       - ${_SERVICE_NAME}
       - --image
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:${_APP_VERSION}
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/awbw-notifier/awbw-notifier:${_APP_VERSION}
       - --region
       - ${_REGION}
       - --set-env-vars
-      - APP_VERSION=${_APP_VERSION},BUCKET_NAME=${_BUCKET_NAME},STATE_OBJECT=${_STATE_OBJECT},GOOGLE_CLOUD_PROJECT=$PROJECT_ID
+      - APP_VERSION=${_APP_VERSION},BUCKET_NAME=${_BUCKET_NAME},STATE_OBJECT=${_STATE_OBJECT}
       - --service-account
       - ${_RUN_SA_EMAIL}
 
@@ -64,9 +64,6 @@ substitutions:
 
   # Cloud Run service name AND image name
   _SERVICE_NAME: awbw-notifier
-
-  # Artifact Registry repository name
-  _AR_REPO: awbw-notifier
 
   _RUN_SA_EMAIL: awbw-notifier-run-sa@games-n-co-486920.iam.gserviceaccount.com
   _SCHED_SA_EMAIL: awbw-notifier-scheduler-sa@games-n-co-486920.iam.gserviceaccount.com

@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use axum::{response::IntoResponse, routing::post, Json, Router};
+use cookie_store::serde::json;
 use cookie_store::CookieStore;
 use reqwest::{header, Client};
 use reqwest_cookie_store::CookieStoreMutex;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, io::Cursor, net::SocketAddr, sync::Arc};
 
 const AWBW_URL: &str = "https://awbw.amarriner.com/yourgames.php?yourTurn=1";
 const LOGIN_URL: &str = "https://awbw.amarriner.com/login.php";
@@ -54,7 +55,6 @@ async fn run_handler() -> axum::response::Response {
 }
 
 async fn run() -> Result<RunResponse> {
-    let _project_id = std::env::var("GOOGLE_CLOUD_PROJECT").context("GOOGLE_CLOUD_PROJECT env missing")?;
     let bucket = std::env::var("BUCKET_NAME").context("BUCKET_NAME env missing")?;
     let state_object = std::env::var("STATE_OBJECT").unwrap_or_else(|_| "state.json".to_string());
 
@@ -63,8 +63,7 @@ async fn run() -> Result<RunResponse> {
         .unwrap_or_default();
 
     let jar = if let Some(cj) = &state.cookies_json {
-        CookieStore::load_json(std::io::Cursor::new(cj.as_bytes()))
-            .unwrap_or_else(|_| CookieStore::default())
+        json::load(Cursor::new(cj.as_bytes())).unwrap_or_else(|_| CookieStore::default())
     } else {
         CookieStore::default()
     };
@@ -79,6 +78,8 @@ async fn run() -> Result<RunResponse> {
     let mut logged_in = !html.contains("You must be logged in");
 
     if !logged_in {
+        eprintln!("[INFO] Login required");
+
         let username = std::env::var("AWBW_USERNAME").context("AWBW_USERNAME env missing")?;
         let password = std::env::var("AWBW_PASSWORD").context("AWBW_PASSWORD env missing")?;
         login_awbw(&client, &username, &password).await?;
@@ -88,6 +89,10 @@ async fn run() -> Result<RunResponse> {
         if !logged_in {
             return Err(anyhow!("Login failed: still not logged in after POST"));
         }
+    }
+
+    if !html.contains("Your Turn Games") {
+        eprintln!("[WARN] This is not the Your Turn Games page !");
     }
 
     let (count, ids) = extract_turn_info(&html);
@@ -110,6 +115,7 @@ async fn run() -> Result<RunResponse> {
         posted = true;
     }
 
+
     Ok(RunResponse {
         ok: true,
         changed,
@@ -126,7 +132,10 @@ async fn fetch_awbw_page(client: &Client) -> Result<String> {
 }
 
 fn extract_turn_info(html: &str) -> (u32, Vec<u32>) {
-    let count = regex_capture_u32(html, r"Your Turn Games\s*\((\d+)\)").unwrap_or(0);
+    let turn_count = regex_capture_u32(html, r"Your Turn Games\s*\((\d+)\)").unwrap_or(0);
+    let start_count =
+        regex_capture_u32(html, r"Your Games Waiting to Start \s*\((\d+)\)").unwrap_or(0);
+    let count = turn_count + start_count;
 
     let mut ids = Vec::new();
     let re = regex::Regex::new(r#"href\s*=\s*["']?game\.php\?games_id=(\d+)"#).unwrap();
@@ -157,17 +166,20 @@ fn make_signature(count: u32, ids: &[u32]) -> String {
 }
 
 fn build_discord_message(count: u32, ids: &[u32]) -> String {
-    if count == 0 {
-        return format!("✅ **AWBW**: No games pending.\n{AWBW_URL}");
+    if count == 0 && ids.len() == 0 {
+        return format!("✅ **AWBW** → No pending turns");
     }
-    let mut s = format!("🎮 **AWBW**: It's your turn! Pending games: **{count}**\n");
-    for id in ids.iter().take(5) {
-        s.push_str(&format!("{BASE_URL}game.php?games_id={id}\n"));
-    }
+    let links = ids
+        .iter()
+        .take(5)
+        .map(|id| format!("[{id}]({BASE_URL}game.php?games_id={id})"))
+        .collect::<Vec<_>>()
+        .join(" • ");
+
+    let mut s = format!("🎮 **AWBW ({count})** → [All]({AWBW_URL}) • {links}");
     if ids.len() > 5 {
-        s.push_str(&format!("…(+{} more)\n", ids.len() - 5));
+        s.push_str(&format!(" • +{} more\n", ids.len() - 5));
     }
-    s.push_str(AWBW_URL);
     s
 }
 
@@ -230,7 +242,7 @@ async fn login_awbw(client: &Client, username: &str, password: &str) -> Result<(
 fn save_cookie_store_json(jar: Arc<CookieStoreMutex>) -> Result<String> {
     let jar = jar.lock().unwrap();
     let mut buf = Vec::new();
-    jar.save_json(&mut buf)
+    cookie_store::serde::json::save(&jar, &mut buf)
         .map_err(|err| anyhow!("cookie store serialize failed: {err}"))?;
     Ok(String::from_utf8(buf)?)
 }
@@ -249,6 +261,7 @@ async fn gcs_read_state(bucket: &str, object: &str) -> Result<State> {
         .send()
         .await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        eprintln!("[INFO] state file not found");
         return Ok(State::default());
     }
     if !resp.status().is_success() {
@@ -302,10 +315,12 @@ mod tests {
     #[test]
     fn extract_turn_info_finds_count_and_ids() {
         let html = r#"
+        <body>
             <h1>Your Turn Games (2)</h1>
             <a href="game.php?games_id=123">Game</a>
             <a href="game.php?games_id=456">Game</a>
             <a href="game.php?games_id=123">Duplicate</a>
+        </body>
         "#;
 
         let (count, ids) = extract_turn_info(html);
@@ -318,8 +333,7 @@ mod tests {
     fn build_discord_message_handles_no_games() {
         let msg = build_discord_message(0, &[]);
 
-        assert!(msg.contains("No games pending"));
-        assert!(msg.contains(AWBW_URL));
+        assert!(msg.contains("No pending turns"));
     }
 
     #[test]

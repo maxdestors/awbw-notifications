@@ -15,13 +15,9 @@ Cloud Run service that checks Advance Wars By Web (AWBW) turns and posts updates
 
 Environment variables:
 
-- `PROJECT_ID`: GCP project ID for Secret Manager access.
 - `BUCKET_NAME`: GCS bucket that stores `state.json`.
 - `STATE_OBJECT`: Optional object name (default: `state.json`).
 - `PORT`: Port for Cloud Run (default: `8080`).
-
-Secrets in Secret Manager:
-
 - `AWBW_USERNAME`
 - `AWBW_PASSWORD`
 - `DISCORD_WEBHOOK_URL`
